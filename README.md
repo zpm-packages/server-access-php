@@ -264,8 +264,422 @@ You can extend the package in several ways:
 
 ---
 
+## Laravel Integration
+
+This package works seamlessly with Laravel. Here's how to integrate it:
+
+### Installation
+
+```bash
+composer require zpmlabs/ssh-manager
+```
+
+### Service Provider Registration
+
+Create a service provider to bind the SSH manager in Laravel's service container:
+
+```php
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
+use ZPMLabs\SshManager\Factories\SshManagerFactory;
+use ZPMLabs\SshManager\Repositories\InMemorySshRepository;
+
+class SshManagerServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        // Bind repository (you can swap this with a database-backed implementation)
+        $this->app->singleton(SshRepositoryContract::class, function ($app) {
+            return new InMemorySshRepository();
+            // Or use your own: return new DatabaseSshRepository();
+        });
+
+        // Bind SSH manager
+        $this->app->singleton(SshManagerContract::class, function ($app) {
+            $repository = $app->make(SshRepositoryContract::class);
+            return SshManagerFactory::make($repository);
+        });
+    }
+}
+```
+
+Register it in `config/app.php`:
+
+```php
+'providers' => [
+    // ...
+    App\Providers\SshManagerServiceProvider::class,
+],
+```
+
+### Using Laravel Collections
+
+The package returns arrays, but you can easily wrap them in Laravel Collections for better functionality:
+
+```php
+use Illuminate\Support\Collection;
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+
+class SshEntryController extends Controller
+{
+    public function __construct(
+        private SshManagerContract $sshManager
+    ) {}
+
+    public function index()
+    {
+        // Get entries as Laravel Collection
+        $entries = collect($this->sshManager->listEntries());
+
+        // Use Collection methods
+        $groupedByOwner = $entries->groupBy(function ($entry) {
+            return $entry->getOwnerId();
+        });
+        
+        $withPublicKeys = $entries->filter(function ($entry) {
+            return $entry->getPublicKey() !== null;
+        });
+
+        $usernames = $entries->map(function ($entry) {
+            return $entry->getUsername();
+        })->unique();
+
+        return view('ssh-entries.index', [
+            'entries' => $entries,
+            'count' => $entries->count(),
+        ]);
+    }
+
+    public function show(string $id)
+    {
+        $entry = $this->sshManager->findEntry($id);
+
+        if (!$entry) {
+            abort(404);
+        }
+
+        return view('ssh-entries.show', compact('entry'));
+    }
+}
+```
+
+### Creating Entries in Laravel
+
+```php
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+use ZPMLabs\SshManager\Entities\SshEntryEntity;
+
+class SshEntryController extends Controller
+{
+    public function store(Request $request, SshManagerContract $sshManager)
+    {
+        $validated = $request->validate([
+            'username' => 'required|string',
+            'name' => 'nullable|string',
+            'comment' => 'nullable|string',
+        ]);
+
+        $entry = new SshEntryEntity(
+            id: '',
+            username: $validated['username'],
+            name: $validated['name'] ?? null,
+            homeDirectory: null,
+            publicKeyPath: null,
+            privateKeyPath: null,
+            publicKey: null,
+            comment: $validated['comment'] ?? null,
+            groups: [],
+            ownerId: auth()->id(), // Link to authenticated user
+            permissions: [],
+        );
+
+        // This will generate SSH keys on the system automatically
+        $created = $sshManager->createEntry($entry);
+
+        return redirect()
+            ->route('ssh-entries.show', $created->getId())
+            ->with('success', 'SSH entry created successfully!');
+    }
+}
+```
+
+### Using in Artisan Commands
+
+```php
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+
+class ListSshEntries extends Command
+{
+    protected $signature = 'ssh:list {--owner= : Filter by owner ID}';
+    protected $description = 'List all SSH entries';
+
+    public function handle(SshManagerContract $sshManager): int
+    {
+        $ownerId = $this->option('owner');
+        $entries = collect($sshManager->listEntries($ownerId));
+
+        if ($entries->isEmpty()) {
+            $this->info('No SSH entries found.');
+            return self::SUCCESS;
+        }
+
+        $this->table(
+            ['ID', 'Username', 'Name', 'Home Directory', 'Public Key Path'],
+            $entries->map(function ($entry) {
+                return [
+                    $entry->getId(),
+                    $entry->getUsername(),
+                    $entry->getName() ?? 'N/A',
+                    $entry->getHomeDirectory() ?? 'N/A',
+                    $entry->getPublicKeyPath() ?? 'N/A',
+                ];
+            })->toArray()
+        );
+
+        $this->info("Total: {$entries->count()} entries");
+
+        return self::SUCCESS;
+    }
+}
+```
+
+### Scanning System Users
+
+```php
+use Illuminate\Support\Collection;
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+
+class SshEntryController extends Controller
+{
+    public function scanSystem(SshManagerContract $sshManager)
+    {
+        // Scan actual system users (OS-level, read-only)
+        $systemEntries = collect($sshManager->scanSystemUsers());
+
+        // Compare with repository entries
+        $repositoryEntries = collect($sshManager->listEntries());
+        
+        $newEntries = $systemEntries->filter(function ($systemEntry) use ($repositoryEntries) {
+            return !$repositoryEntries->contains(function ($repoEntry) use ($systemEntry) {
+                return $repoEntry->getUsername() === $systemEntry->getUsername();
+            });
+        });
+
+        return view('ssh-entries.scan', [
+            'systemEntries' => $systemEntries,
+            'repositoryEntries' => $repositoryEntries,
+            'newEntries' => $newEntries,
+        ]);
+    }
+}
+```
+
+### Generating Keys for Users
+
+```php
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+
+class GenerateSshKeyCommand extends Command
+{
+    protected $signature = 'ssh:generate {username} {--label=}';
+    protected $description = 'Generate SSH key pair for a system user';
+
+    public function handle(SshManagerContract $sshManager): int
+    {
+        $username = $this->argument('username');
+        $label = $this->option('label') ?: "{$username}@{$this->laravel->environment()}";
+
+        try {
+            $entry = $sshManager->generateKeyPairForUser(
+                systemUsername: $username,
+                label: $label,
+                keyType: 'ed25519',
+                bits: null
+            );
+
+            $this->info("SSH key pair generated successfully!");
+            $this->line("Public key: {$entry->getPublicKeyPath()}");
+            $this->line("Private key: {$entry->getPrivateKeyPath()}");
+            
+            if ($entry->getPublicKey()) {
+                $this->line("Public key content:");
+                $this->line($entry->getPublicKey());
+            }
+
+            return self::SUCCESS;
+        } catch (\Exception $e) {
+            $this->error("Failed to generate key: {$e->getMessage()}");
+            return self::FAILURE;
+        }
+    }
+}
+```
+
+### Database-Backed Repository (Optional)
+
+For production use, you might want to store entries in a database. Here's a basic example:
+
+```php
+<?php
+
+namespace App\Repositories;
+
+use Illuminate\Support\Facades\DB;
+use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
+use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMLabs\SshManager\Entities\SshPermissionEntity;
+
+class DatabaseSshRepository implements SshRepositoryContract
+{
+    public function create(SshEntryEntity $entry): SshEntryEntity
+    {
+        $id = DB::table('ssh_entries')->insertGetId([
+            'username' => $entry->getUsername(),
+            'name' => $entry->getName(),
+            'home_directory' => $entry->getHomeDirectory(),
+            'public_key_path' => $entry->getPublicKeyPath(),
+            'private_key_path' => $entry->getPrivateKeyPath(),
+            'public_key' => $entry->getPublicKey(),
+            'comment' => $entry->getComment(),
+            'groups' => json_encode($entry->getGroups()),
+            'owner_id' => $entry->getOwnerId(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $this->find((string) $id) ?? $entry;
+    }
+
+    public function update(SshEntryEntity $entry): SshEntryEntity
+    {
+        DB::table('ssh_entries')
+            ->where('id', $entry->getId())
+            ->update([
+                'username' => $entry->getUsername(),
+                'name' => $entry->getName(),
+                // ... update other fields
+                'updated_at' => now(),
+            ]);
+
+        return $this->find($entry->getId()) ?? $entry;
+    }
+
+    public function delete(string $id): void
+    {
+        DB::table('ssh_entries')->where('id', $id)->delete();
+    }
+
+    public function find(string $id): ?SshEntryEntity
+    {
+        $row = DB::table('ssh_entries')->where('id', $id)->first();
+        
+        if (!$row) {
+            return null;
+        }
+
+        return $this->mapRowToEntity($row);
+    }
+
+    public function all(?string $ownerId = null): array
+    {
+        $query = DB::table('ssh_entries');
+        
+        if ($ownerId) {
+            $query->where('owner_id', $ownerId);
+        }
+
+        return $query->get()->map(function ($row) {
+            return $this->mapRowToEntity($row);
+        })->toArray();
+    }
+
+    protected function mapRowToEntity($row): SshEntryEntity
+    {
+        return new SshEntryEntity(
+            id: (string) $row->id,
+            username: $row->username,
+            name: $row->name,
+            homeDirectory: $row->home_directory,
+            publicKeyPath: $row->public_key_path,
+            privateKeyPath: $row->private_key_path,
+            publicKey: $row->public_key,
+            comment: $row->comment,
+            groups: json_decode($row->groups ?? '[]', true),
+            ownerId: $row->owner_id,
+            permissions: [], // Load from separate table if needed
+        );
+    }
+}
+```
+
+Then update your service provider:
+
+```php
+$this->app->singleton(SshRepositoryContract::class, function ($app) {
+    return new \App\Repositories\DatabaseSshRepository();
+});
+```
+
+### Helper Methods with Collections
+
+You can create helper methods that return Collections for easier use:
+
+```php
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Collection;
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+use ZPMLabs\SshManager\Entities\SshEntryEntity;
+
+class SshManagerService
+{
+    public function __construct(
+        private SshManagerContract $manager
+    ) {}
+
+    public function entries(?string $ownerId = null): Collection
+    {
+        return collect($this->manager->listEntries($ownerId));
+    }
+
+    public function systemEntries(): Collection
+    {
+        return collect($this->manager->scanSystemUsers());
+    }
+
+    public function findByUsername(string $username): ?SshEntryEntity
+    {
+        return $this->entries()
+            ->first(function ($entry) use ($username) {
+                return $entry->getUsername() === $username;
+            });
+    }
+
+    public function entriesForUser(int $userId): Collection
+    {
+        return $this->entries((string) $userId);
+    }
+}
+```
+
+---
+
 ## Notes
 
-- Linux provider currently has the most concrete implementation (`scanSystemUsers` + `generateKeyPairForUser`).
-- Windows / macOS / Android providers are stubs with clear `TODO` sections, ready to be implemented.
+- All providers (Linux, Windows, macOS, Android) now have full CRUD implementations with SSH key generation.
+- When creating entries, SSH keys are automatically generated on the system.
 - All code and comments are kept framework-agnostic. You can easily build Laravel / Symfony integration on top of this package.
+- The package works great with Laravel Collections for filtering, mapping, and transforming SSH entry data.
