@@ -4,6 +4,7 @@ namespace ZPMLabs\SshManager\Providers;
 
 use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
 use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMLabs\SshManager\Enums\OperatingSystem;
 
 class LinuxSshManagerProvider extends AbstractSshManagerProvider
 {
@@ -12,9 +13,9 @@ class LinuxSshManagerProvider extends AbstractSshManagerProvider
         parent::__construct($repository);
     }
 
-    public function getOsName(): string
+    public function getOs(): OperatingSystem
     {
-        return 'linux';
+        return OperatingSystem::LINUX;
     }
 
     /**

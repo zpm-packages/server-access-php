@@ -1,9 +1,9 @@
-
 <?php
 
 namespace ZPMLabs\SshManager\Providers;
 
 use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
+use ZPMLabs\SshManager\Entities\SshEntryEntity;
 use ZPMLabs\SshManager\Enums\OperatingSystem;
 
 class MacOsSshManagerProvider extends AbstractSshManagerProvider
@@ -13,18 +13,24 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
         parent::__construct($repository);
     }
 
-    public function getOsName(): string
+    public function getOs(): OperatingSystem
     {
         return OperatingSystem::MACOS;
     }
 
-    public function sync(): void
+    public function scanSystemUsers(): array
     {
-        // Here you would:
-        // - read all entries from repository
-        // - generate proper config / authorized_keys file(s)
-        // - write to disk (e.g. /home/{user}/.ssh/authorized_keys)
-        //
-        // For now leave as placeholder; this is OS-specific implementation detail.
+        // TODO: Implement macOS-specific user/key scanning.
+        return [];
+    }
+
+    public function generateKeyPairForUser(
+        string $systemUsername,
+        ?string $label = null,
+        ?string $keyType = 'ed25519',
+        ?int $bits = null
+    ): SshEntryEntity {
+        // TODO: Implement macOS-specific key generation logic.
+        throw new \RuntimeException('generateKeyPairForUser is not implemented for macOS yet.');
     }
 }

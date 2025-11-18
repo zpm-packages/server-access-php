@@ -2,9 +2,10 @@
 
 namespace ZPMLabs\SshManager\Providers;
 
-use ZPMLabs\SshManager\Contract\SshManagerContract;
-use ZPMLabs\SshManager\Contract\SshRepositoryContract;
+use ZPMLabs\SshManager\Contracts\SshManagerContract;
+use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
 use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMLabs\SshManager\Enums\OperatingSystem;
 
 abstract class AbstractSshManagerProvider implements SshManagerContract
 {
@@ -12,7 +13,18 @@ abstract class AbstractSshManagerProvider implements SshManagerContract
         protected SshRepositoryContract $repository,
     ) {}
 
-    abstract public function getOsName(): string;
+    /**
+     * Returns enum for current OS of this provider.
+     */
+    abstract public function getOs(): OperatingSystem;
+
+    /**
+     * Helper if we ever need plain string.
+     */
+    public function getOsName(): string
+    {
+        return $this->getOs()->value;
+    }
 
     public function listEntries(?string $ownerId = null): array
     {
@@ -51,11 +63,27 @@ abstract class AbstractSshManagerProvider implements SshManagerContract
 
     /**
      * OS-specific sync: write authorized_keys, config files, etc.
+     * Providers can override; by default we do nothing.
      */
     public function sync(): void
     {
-        // Default no-op; OS providers override.
+        // Default no-op; OS providers override if needed.
     }
 
-    // scanSystemUsers + generateKeyPairForUser će OS provider implementirati
+    /**
+     * Must be implemented per OS – scanning real system users / keys.
+     *
+     * @return SshEntryEntity[]
+     */
+    abstract public function scanSystemUsers(): array;
+
+    /**
+     * Must be implemented per OS – generate SSH key pair for given system user.
+     */
+    abstract public function generateKeyPairForUser(
+        string $systemUsername,
+        ?string $label = null,
+        ?string $keyType = 'ed25519',
+        ?int $bits = null
+    ): SshEntryEntity;
 }
