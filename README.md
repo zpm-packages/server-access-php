@@ -2,13 +2,16 @@
 
 Cross-platform PHP primitives for managing SSH-backed server access, users, keys, permissions, and OS-level synchronization.
 
-This package **does not** act as an SSH client.  
+This package is **not** a full interactive SSH client library like phpseclib or OpenSSH bindings.  
 Its purpose is to:
 
 - keep a structured list of SSH entries (users + keys + permissions) via a repository
 - scan the current OS for SSH users and keys
 - generate SSH key pairs for system users
+- execute management commands through configured manager credentials on local or remote hosts
 - optionally sync repository state with OS-level config (e.g. `authorized_keys` – per OS provider)
+
+In practice, it acts as a server-access management layer. It can target the current machine or a remote host by wrapping system commands with configured manager credentials, but it is not designed to be a general-purpose shell, terminal session, SFTP, or port-forwarding client.
 
 The public PHP namespace is `ZPMPackages\SshManager\...`.
 

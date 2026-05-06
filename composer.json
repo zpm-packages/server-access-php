@@ -1,5 +1,6 @@
 {
   "name": "zpm-packages/server-access",
+  "version": "1.0.0",
   "description": "Cross-platform PHP primitives for managing SSH-backed server access, users, keys, and permissions.",
   "type": "library",
   "license": "MIT",
