@@ -1,22 +1,33 @@
 <?php
 
-namespace ZPMLabs\SshManager\Providers;
+namespace ZPMPackages\SshManager\Providers;
 
-use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
-use ZPMLabs\SshManager\Enums\OperatingSystem;
+use ZPMPackages\SshManager\Contracts\SshRepositoryContract;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshManagerCredentialsEntity;
+use ZPMPackages\SshManager\Enums\OperatingSystem;
 
 class AndroidSshManagerProvider extends AbstractSshManagerProvider
 {
-    public function __construct(SshRepositoryContract $repository)
+    public function __construct(
+        SshRepositoryContract $repository,
+        ?SshManagerCredentialsEntity $managerCredentials = null,
+    )
     {
-        parent::__construct($repository);
+        parent::__construct($repository, $managerCredentials);
         echo "[Android Provider] Initialized\n";
     }
 
     public function getOs(): OperatingSystem
     {
         return OperatingSystem::ANDROID;
+    }
+
+    public function listSystemUsernames(): array
+    {
+        $username = get_current_user() ?: 'termux';
+
+        return [$username];
     }
 
     public function listEntries(?string $ownerId = null): array
@@ -30,31 +41,17 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
     public function createEntry(SshEntryEntity $entry): SshEntryEntity
     {
         echo "[Android Provider] Creating entry for user: {$entry->getUsername()}\n";
-        
-        // Generate SSH keys on the system
+
         $keyEntity = $this->generateKeyPairForUser(
             $entry->getUsername(),
             $entry->getName() ?? $entry->getComment(),
-            'ed25519',
-            null
+            $this->normalizeKeyType($entry->getKeyType()),
+            $entry->getKeyBits(),
+            $entry->getKeyPassphrase(),
         );
-        
-        // Merge key paths into the entry
-        $entryWithKeys = new SshEntryEntity(
-            id: $entry->getId() ?: $keyEntity->getId(),
-            username: $entry->getUsername(),
-            name: $entry->getName() ?? $keyEntity->getName(),
-            homeDirectory: $keyEntity->getHomeDirectory(),
-            publicKeyPath: $keyEntity->getPublicKeyPath(),
-            privateKeyPath: $keyEntity->getPrivateKeyPath(),
-            publicKey: $keyEntity->getPublicKey(),
-            comment: $entry->getComment() ?? $keyEntity->getComment(),
-            groups: $entry->getGroups(),
-            ownerId: $entry->getOwnerId(),
-            permissions: $entry->getPermissions(),
-        );
-        
-        // Create entry in repository
+
+        $entryWithKeys = $this->buildManagedEntryFromGeneratedKey($entry, $keyEntity);
+
         $created = $this->repository->create($entryWithKeys);
         
         echo "[Android Provider] Entry created with ID: {$created->getId()}\n";
@@ -75,15 +72,17 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
             throw new \RuntimeException("Entry not found: {$entry->getId()}");
         }
         
-        // Update keys if username changed
-        if ($existing->getUsername() !== $entry->getUsername()) {
+        if ($this->shouldRegenerateKeyMaterial($existing, $entry)) {
             echo "[Android Provider] Username changed, regenerating keys\n";
-            $this->generateKeyPairForUser(
+            $keyEntity = $this->generateKeyPairForUser(
                 $entry->getUsername(),
                 $entry->getName() ?? $entry->getComment(),
-                'ed25519',
-                null
+                $this->normalizeKeyType($entry->getKeyType()),
+                $entry->getKeyBits(),
+                $entry->getKeyPassphrase(),
             );
+
+            $entry = $this->buildManagedEntryFromGeneratedKey($entry, $keyEntity);
         }
         
         $updated = $this->repository->update($entry);
@@ -123,33 +122,31 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
         
         $sshDir = rtrim($home, '/') . '/.ssh';
         
-        if (is_dir($sshDir)) {
-            $pubPath = $sshDir . '/id_ed25519.pub';
-            $privPath = $sshDir . '/id_ed25519';
-            
-            $publicKey = is_readable($pubPath)
-                ? trim((string) file_get_contents($pubPath))
-                : null;
-            
-            if ($publicKey) {
-                $username = get_current_user() ?: 'termux';
-                $entries[] = new SshEntryEntity(
-                    id: $username . ':id_ed25519',
-                    username: $username,
-                    name: $username,
-                    homeDirectory: $home,
-                    publicKeyPath: $pubPath,
-                    privateKeyPath: $privPath,
-                    publicKey: $publicKey,
-                    comment: null,
-                    groups: [],
-                    ownerId: null,
-                    permissions: [],
-                );
-            }
-        }
+        $pubPath = $sshDir . '/id_ed25519.pub';
+        $privPath = $sshDir . '/id_ed25519';
+        $publicKey = is_readable($pubPath)
+            ? trim((string) file_get_contents($pubPath))
+            : null;
+        $username = get_current_user() ?: 'termux';
+
+        $entries[] = new SshEntryEntity(
+            id: $username,
+            username: $username,
+            name: $username,
+            homeDirectory: $home,
+            publicKeyPath: is_readable($pubPath) ? $pubPath : null,
+            privateKeyPath: is_readable($privPath) ? $privPath : null,
+            publicKey: $publicKey,
+            authorizedKeys: $this->loadAuthorizedKeys($home),
+            comment: null,
+            groups: [],
+            ownerId: null,
+            keyType: $publicKey ? 'ed25519' : null,
+            keyBits: null,
+            permissions: [],
+        );
         
-        echo "[Android Provider] Scanned " . count($entries) . " users with SSH keys\n";
+        echo "[Android Provider] Scanned " . count($entries) . " users\n";
         return $entries;
     }
 
@@ -157,9 +154,14 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
         string $systemUsername,
         ?string $label = null,
         ?string $keyType = 'ed25519',
-        ?int $bits = null
+        ?int $bits = null,
+        ?string $passphrase = null,
+        ?string $publicKeyPath = null,
+        ?string $privateKeyPath = null,
     ): SshEntryEntity {
         echo "[Android Provider] Generating key pair for user: {$systemUsername}\n";
+
+        $keyType = $this->normalizeKeyType($keyType);
         
         // Android/Termux home directory
         $termuxHome = '/data/data/com.termux/files/home';
@@ -169,18 +171,15 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
         
         if (!is_dir($sshDir)) {
             echo "[Android Provider] Creating .ssh directory: {$sshDir}\n";
-            mkdir($sshDir, 0700, true);
+            $this->createDirectory($sshDir);
         }
         
-        $keyFileBase = $sshDir . '/id_' . $keyType;
+        [$keyFileBase, $publicKeyPath] = $this->resolveManagedKeyPaths($home, $label, $keyType, '/', $publicKeyPath, $privateKeyPath);
         
         // Check if key already exists
         if (file_exists($keyFileBase)) {
             echo "[Android Provider] Key already exists: {$keyFileBase}\n";
-            $publicKeyPath = $keyFileBase . '.pub';
-            $publicKey = is_readable($publicKeyPath)
-                ? trim((string) file_get_contents($publicKeyPath))
-                : null;
+            $publicKey = $this->readFileContents($publicKeyPath);
             
             return new SshEntryEntity(
                 id: $systemUsername . ':id_' . $keyType,
@@ -190,9 +189,12 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
                 publicKeyPath: $publicKeyPath,
                 privateKeyPath: $keyFileBase,
                 publicKey: $publicKey,
+                authorizedKeys: $this->loadAuthorizedKeys($home),
                 comment: $label ?? ($systemUsername . '@' . gethostname()),
                 groups: [],
                 ownerId: null,
+                keyType: $keyType,
+                keyBits: $bits,
                 permissions: [],
             );
         }
@@ -203,7 +205,7 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
             'ssh-keygen',
             '-t', $keyType,
             '-f', $keyFileBase,
-            '-N', '',
+            '-N', $passphrase ?? '',
             '-C', $comment,
         ];
         
@@ -212,31 +214,23 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
             $cmd[] = (string) $bits;
         }
         
-        $escaped = array_map('escapeshellarg', $cmd);
-        $command = implode(' ', $escaped) . ' 2>&1';
+        $command = $this->buildExecutionCommand($cmd);
         
         echo "[Android Provider] Executing: {$command}\n";
         
-        $output = [];
-        $exitCode = 0;
-        exec($command, $output, $exitCode);
-        
-        if ($exitCode !== 0) {
-            $error = implode("\n", $output);
+        $result = $this->executeCommand($cmd);
+
+        if ($result['exitCode'] !== 0) {
+            $error = implode("\n", $result['output']);
             echo "[Android Provider] Error generating key: {$error}\n";
-            throw new \RuntimeException(
-                "ssh-keygen failed with code {$exitCode}: {$error}"
-            );
+            $this->ensureCommandSucceeded($result, 'ssh-keygen');
         }
         
         echo "[Android Provider] Key generated successfully\n";
         
-        $publicKeyPath = $keyFileBase . '.pub';
         $privateKeyPath = $keyFileBase;
         
-        $publicKey = is_readable($publicKeyPath)
-            ? trim((string) file_get_contents($publicKeyPath))
-            : null;
+        $publicKey = $this->readFileContents($publicKeyPath);
         
         echo "[Android Provider] Public key: " . substr($publicKey ?? '', 0, 50) . "...\n";
         
@@ -248,9 +242,12 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
             publicKeyPath: $publicKeyPath,
             privateKeyPath: $privateKeyPath,
             publicKey: $publicKey,
+            authorizedKeys: $this->loadAuthorizedKeys($home),
             comment: $comment,
             groups: [],
             ownerId: null,
+            keyType: $keyType,
+            keyBits: $bits,
             permissions: [],
         );
         
@@ -260,6 +257,7 @@ class AndroidSshManagerProvider extends AbstractSshManagerProvider
     public function sync(): void
     {
         echo "[Android Provider] Syncing SSH configuration\n";
+        $this->syncAuthorizedKeysEntries();
         echo "[Android Provider] Sync completed\n";
     }
 }

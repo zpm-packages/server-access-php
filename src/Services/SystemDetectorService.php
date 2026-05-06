@@ -1,8 +1,8 @@
 <?php
 
-namespace ZPMLabs\SshManager\Services;
+namespace ZPMPackages\SshManager\Services;
 
-use ZPMLabs\SshManager\Enums\OperatingSystem;
+use ZPMPackages\SshManager\Enums\OperatingSystem;
 
 class SystemDetectorService
 {

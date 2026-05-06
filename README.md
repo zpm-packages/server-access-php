@@ -1,6 +1,6 @@
-# ZPMLabs SSH Manager
+# ZPMPackages Server Access
 
-Simple, OS-aware SSH configuration manager for PHP.
+Cross-platform PHP primitives for managing SSH-backed server access, users, keys, permissions, and OS-level synchronization.
 
 This package **does not** act as an SSH client.  
 Its purpose is to:
@@ -10,12 +10,14 @@ Its purpose is to:
 - generate SSH key pairs for system users
 - optionally sync repository state with OS-level config (e.g. `authorized_keys` – per OS provider)
 
+The public PHP namespace is `ZPMPackages\SshManager\...`.
+
 ---
 
 ## Installation
 
 ```bash
-composer require zpmlabs/ssh-manager
+composer require zpm-packages/server-access
 ```
 
 Requires **PHP 8.2+**.
@@ -49,20 +51,20 @@ Requires **PHP 8.2+**.
 For testing and simple usage there is an in-memory implementation:
 
 ```php
-use ZPMLabs\SshManager\Repositories\InMemorySshRepository;
+use ZPMPackages\SshManager\Repositories\InMemorySshRepository;
 
 $repository = new InMemorySshRepository();
 ```
 
 Later, you can replace this with your own implementation of
-`ZPMLabs\SshManager\Contracts\SshRepositoryContract` (e.g. DB / JSON file).
+`ZPMPackages\SshManager\Contracts\SshRepositoryContract` (e.g. DB / JSON file).
 
 ---
 
 ### 2. Create the Manager via Factory
 
 ```php
-use ZPMLabs\SshManager\Factories\SshManagerFactory;
+use ZPMPackages\SshManager\Factories\SshManagerFactory;
 
 // Detect OS automatically and create a manager for it:
 $manager = SshManagerFactory::make($repository);
@@ -88,9 +90,9 @@ There are **two** ways to list entries:
 ### 1) List all stored entries (from repository)
 
 ```php
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
 
-/** @var \ZPMLabs\SshManager\Contracts\SshManagerContract $manager */
+/** @var \ZPMPackages\SshManager\Contracts\SshManagerContract $manager */
 
 // All entries, regardless of owner:
 $entries = $manager->listEntries();
@@ -138,7 +140,7 @@ foreach ($systemEntries as $entry) {
 You can create entries manually and store them in the repository via the manager.
 
 ```php
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
 
 $entry = new SshEntryEntity(
     id: 'entry-1',
@@ -167,7 +169,7 @@ $created = $manager->createEntry($entry);
 To update an existing entry:
 
 ```php
-/** @var \ZPMLabs\SshManager\Entities\SshEntryEntity|null $existing */
+/** @var \ZPMPackages\SshManager\Entities\SshEntryEntity|null $existing */
 $existing = $manager->findEntry('entry-1');
 
 if ($existing !== null) {
@@ -264,422 +266,29 @@ You can extend the package in several ways:
 
 ---
 
-## Laravel Integration
+## Framework Integrations
 
-This package works seamlessly with Laravel. Here's how to integrate it:
+This package stays framework-agnostic on purpose. If you want container bindings, Laravel wrappers, Eloquent-backed repositories, sync commands, or a Filament admin UI, use the higher-level packages instead of duplicating that setup here.
 
-### Installation
+- Laravel integration package: `zpm-packages/server-access-laravel`
+- Filament admin package: `zpm-packages/server-access-filament`
 
-```bash
-composer require zpmlabs/ssh-manager
-```
+Recommended wrapper structure in an application:
 
-### Service Provider Registration
+- bind `ZPMPackages\SshManager\Contracts\SshRepositoryContract` in your app or package
+- resolve the manager through a wrapper or provider around `SshManagerFactory`
+- keep app-specific database models, policies, and UI concerns outside this core package
 
-Create a service provider to bind the SSH manager in Laravel's service container:
+See the package READMEs for those layers:
 
-```php
-<?php
-
-namespace App\Providers;
-
-use Illuminate\Support\ServiceProvider;
-use ZPMLabs\SshManager\Contracts\SshManagerContract;
-use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
-use ZPMLabs\SshManager\Factories\SshManagerFactory;
-use ZPMLabs\SshManager\Repositories\InMemorySshRepository;
-
-class SshManagerServiceProvider extends ServiceProvider
-{
-    public function register(): void
-    {
-        // Bind repository (you can swap this with a database-backed implementation)
-        $this->app->singleton(SshRepositoryContract::class, function ($app) {
-            return new InMemorySshRepository();
-            // Or use your own: return new DatabaseSshRepository();
-        });
-
-        // Bind SSH manager
-        $this->app->singleton(SshManagerContract::class, function ($app) {
-            $repository = $app->make(SshRepositoryContract::class);
-            return SshManagerFactory::make($repository);
-        });
-    }
-}
-```
-
-Register it in `config/app.php`:
-
-```php
-'providers' => [
-    // ...
-    App\Providers\SshManagerServiceProvider::class,
-],
-```
-
-### Using Laravel Collections
-
-The package returns arrays, but you can easily wrap them in Laravel Collections for better functionality:
-
-```php
-use Illuminate\Support\Collection;
-use ZPMLabs\SshManager\Contracts\SshManagerContract;
-
-class SshEntryController extends Controller
-{
-    public function __construct(
-        private SshManagerContract $sshManager
-    ) {}
-
-    public function index()
-    {
-        // Get entries as Laravel Collection
-        $entries = collect($this->sshManager->listEntries());
-
-        // Use Collection methods
-        $groupedByOwner = $entries->groupBy(function ($entry) {
-            return $entry->getOwnerId();
-        });
-        
-        $withPublicKeys = $entries->filter(function ($entry) {
-            return $entry->getPublicKey() !== null;
-        });
-
-        $usernames = $entries->map(function ($entry) {
-            return $entry->getUsername();
-        })->unique();
-
-        return view('ssh-entries.index', [
-            'entries' => $entries,
-            'count' => $entries->count(),
-        ]);
-    }
-
-    public function show(string $id)
-    {
-        $entry = $this->sshManager->findEntry($id);
-
-        if (!$entry) {
-            abort(404);
-        }
-
-        return view('ssh-entries.show', compact('entry'));
-    }
-}
-```
-
-### Creating Entries in Laravel
-
-```php
-use ZPMLabs\SshManager\Contracts\SshManagerContract;
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
-
-class SshEntryController extends Controller
-{
-    public function store(Request $request, SshManagerContract $sshManager)
-    {
-        $validated = $request->validate([
-            'username' => 'required|string',
-            'name' => 'nullable|string',
-            'comment' => 'nullable|string',
-        ]);
-
-        $entry = new SshEntryEntity(
-            id: '',
-            username: $validated['username'],
-            name: $validated['name'] ?? null,
-            homeDirectory: null,
-            publicKeyPath: null,
-            privateKeyPath: null,
-            publicKey: null,
-            comment: $validated['comment'] ?? null,
-            groups: [],
-            ownerId: auth()->id(), // Link to authenticated user
-            permissions: [],
-        );
-
-        // This will generate SSH keys on the system automatically
-        $created = $sshManager->createEntry($entry);
-
-        return redirect()
-            ->route('ssh-entries.show', $created->getId())
-            ->with('success', 'SSH entry created successfully!');
-    }
-}
-```
-
-### Using in Artisan Commands
-
-```php
-<?php
-
-namespace App\Console\Commands;
-
-use Illuminate\Console\Command;
-use Illuminate\Support\Collection;
-use ZPMLabs\SshManager\Contracts\SshManagerContract;
-
-class ListSshEntries extends Command
-{
-    protected $signature = 'ssh:list {--owner= : Filter by owner ID}';
-    protected $description = 'List all SSH entries';
-
-    public function handle(SshManagerContract $sshManager): int
-    {
-        $ownerId = $this->option('owner');
-        $entries = collect($sshManager->listEntries($ownerId));
-
-        if ($entries->isEmpty()) {
-            $this->info('No SSH entries found.');
-            return self::SUCCESS;
-        }
-
-        $this->table(
-            ['ID', 'Username', 'Name', 'Home Directory', 'Public Key Path'],
-            $entries->map(function ($entry) {
-                return [
-                    $entry->getId(),
-                    $entry->getUsername(),
-                    $entry->getName() ?? 'N/A',
-                    $entry->getHomeDirectory() ?? 'N/A',
-                    $entry->getPublicKeyPath() ?? 'N/A',
-                ];
-            })->toArray()
-        );
-
-        $this->info("Total: {$entries->count()} entries");
-
-        return self::SUCCESS;
-    }
-}
-```
-
-### Scanning System Users
-
-```php
-use Illuminate\Support\Collection;
-use ZPMLabs\SshManager\Contracts\SshManagerContract;
-
-class SshEntryController extends Controller
-{
-    public function scanSystem(SshManagerContract $sshManager)
-    {
-        // Scan actual system users (OS-level, read-only)
-        $systemEntries = collect($sshManager->scanSystemUsers());
-
-        // Compare with repository entries
-        $repositoryEntries = collect($sshManager->listEntries());
-        
-        $newEntries = $systemEntries->filter(function ($systemEntry) use ($repositoryEntries) {
-            return !$repositoryEntries->contains(function ($repoEntry) use ($systemEntry) {
-                return $repoEntry->getUsername() === $systemEntry->getUsername();
-            });
-        });
-
-        return view('ssh-entries.scan', [
-            'systemEntries' => $systemEntries,
-            'repositoryEntries' => $repositoryEntries,
-            'newEntries' => $newEntries,
-        ]);
-    }
-}
-```
-
-### Generating Keys for Users
-
-```php
-use ZPMLabs\SshManager\Contracts\SshManagerContract;
-
-class GenerateSshKeyCommand extends Command
-{
-    protected $signature = 'ssh:generate {username} {--label=}';
-    protected $description = 'Generate SSH key pair for a system user';
-
-    public function handle(SshManagerContract $sshManager): int
-    {
-        $username = $this->argument('username');
-        $label = $this->option('label') ?: "{$username}@{$this->laravel->environment()}";
-
-        try {
-            $entry = $sshManager->generateKeyPairForUser(
-                systemUsername: $username,
-                label: $label,
-                keyType: 'ed25519',
-                bits: null
-            );
-
-            $this->info("SSH key pair generated successfully!");
-            $this->line("Public key: {$entry->getPublicKeyPath()}");
-            $this->line("Private key: {$entry->getPrivateKeyPath()}");
-            
-            if ($entry->getPublicKey()) {
-                $this->line("Public key content:");
-                $this->line($entry->getPublicKey());
-            }
-
-            return self::SUCCESS;
-        } catch (\Exception $e) {
-            $this->error("Failed to generate key: {$e->getMessage()}");
-            return self::FAILURE;
-        }
-    }
-}
-```
-
-### Database-Backed Repository (Optional)
-
-For production use, you might want to store entries in a database. Here's a basic example:
-
-```php
-<?php
-
-namespace App\Repositories;
-
-use Illuminate\Support\Facades\DB;
-use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
-use ZPMLabs\SshManager\Entities\SshPermissionEntity;
-
-class DatabaseSshRepository implements SshRepositoryContract
-{
-    public function create(SshEntryEntity $entry): SshEntryEntity
-    {
-        $id = DB::table('ssh_entries')->insertGetId([
-            'username' => $entry->getUsername(),
-            'name' => $entry->getName(),
-            'home_directory' => $entry->getHomeDirectory(),
-            'public_key_path' => $entry->getPublicKeyPath(),
-            'private_key_path' => $entry->getPrivateKeyPath(),
-            'public_key' => $entry->getPublicKey(),
-            'comment' => $entry->getComment(),
-            'groups' => json_encode($entry->getGroups()),
-            'owner_id' => $entry->getOwnerId(),
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        return $this->find((string) $id) ?? $entry;
-    }
-
-    public function update(SshEntryEntity $entry): SshEntryEntity
-    {
-        DB::table('ssh_entries')
-            ->where('id', $entry->getId())
-            ->update([
-                'username' => $entry->getUsername(),
-                'name' => $entry->getName(),
-                // ... update other fields
-                'updated_at' => now(),
-            ]);
-
-        return $this->find($entry->getId()) ?? $entry;
-    }
-
-    public function delete(string $id): void
-    {
-        DB::table('ssh_entries')->where('id', $id)->delete();
-    }
-
-    public function find(string $id): ?SshEntryEntity
-    {
-        $row = DB::table('ssh_entries')->where('id', $id)->first();
-        
-        if (!$row) {
-            return null;
-        }
-
-        return $this->mapRowToEntity($row);
-    }
-
-    public function all(?string $ownerId = null): array
-    {
-        $query = DB::table('ssh_entries');
-        
-        if ($ownerId) {
-            $query->where('owner_id', $ownerId);
-        }
-
-        return $query->get()->map(function ($row) {
-            return $this->mapRowToEntity($row);
-        })->toArray();
-    }
-
-    protected function mapRowToEntity($row): SshEntryEntity
-    {
-        return new SshEntryEntity(
-            id: (string) $row->id,
-            username: $row->username,
-            name: $row->name,
-            homeDirectory: $row->home_directory,
-            publicKeyPath: $row->public_key_path,
-            privateKeyPath: $row->private_key_path,
-            publicKey: $row->public_key,
-            comment: $row->comment,
-            groups: json_decode($row->groups ?? '[]', true),
-            ownerId: $row->owner_id,
-            permissions: [], // Load from separate table if needed
-        );
-    }
-}
-```
-
-Then update your service provider:
-
-```php
-$this->app->singleton(SshRepositoryContract::class, function ($app) {
-    return new \App\Repositories\DatabaseSshRepository();
-});
-```
-
-### Helper Methods with Collections
-
-You can create helper methods that return Collections for easier use:
-
-```php
-<?php
-
-namespace App\Services;
-
-use Illuminate\Support\Collection;
-use ZPMLabs\SshManager\Contracts\SshManagerContract;
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
-
-class SshManagerService
-{
-    public function __construct(
-        private SshManagerContract $manager
-    ) {}
-
-    public function entries(?string $ownerId = null): Collection
-    {
-        return collect($this->manager->listEntries($ownerId));
-    }
-
-    public function systemEntries(): Collection
-    {
-        return collect($this->manager->scanSystemUsers());
-    }
-
-    public function findByUsername(string $username): ?SshEntryEntity
-    {
-        return $this->entries()
-            ->first(function ($entry) use ($username) {
-                return $entry->getUsername() === $username;
-            });
-    }
-
-    public function entriesForUser(int $userId): Collection
-    {
-        return $this->entries((string) $userId);
-    }
-}
-```
+- Laravel wrapper: `../laravel-ssh-management/README.md`
+- Filament wrapper: `../filament-ssh-management/README.md`
 
 ---
 
 ## Notes
 
-- All providers (Linux, Windows, macOS, Android) now have full CRUD implementations with SSH key generation.
+- All providers support the core entry management flow, while OS-level behavior depends on the active provider.
 - When creating entries, SSH keys are automatically generated on the system.
-- All code and comments are kept framework-agnostic. You can easily build Laravel / Symfony integration on top of this package.
-- The package works great with Laravel Collections for filtering, mapping, and transforming SSH entry data.
+- All code and comments are kept framework-agnostic. You can build Laravel, Symfony, or custom application layers on top of this package.
+- Higher-level container bindings, persistence wrappers, and admin UI integrations belong in the Laravel and Filament packages, not in this core package.

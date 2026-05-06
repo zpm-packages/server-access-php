@@ -1,6 +1,6 @@
 {
-  "name": "zpmlabs/ssh-manager",
-  "description": "OS-aware SSH configuration management package for PHP.",
+  "name": "zpm-packages/server-access",
+  "description": "Cross-platform PHP primitives for managing SSH-backed server access, users, keys, and permissions.",
   "type": "library",
   "license": "MIT",
   "require": {
@@ -8,12 +8,12 @@
   },
   "autoload": {
     "psr-4": {
-      "ZPMLabs\\SshManager\\": "src/"
+      "ZPMPackages\\SshManager\\": "src/"
     }
   },
   "autoload-dev": {
     "psr-4": {
-      "ZPMLabs\\SshManager\\Tests\\": "tests/"
+      "ZPMPackages\\SshManager\\Tests\\": "tests/"
     }
   },
   "require-dev": {

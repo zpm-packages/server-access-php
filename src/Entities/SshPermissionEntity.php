@@ -1,6 +1,6 @@
 <?php
 
-namespace ZPMLabs\SshManager\Entities;
+namespace ZPMPackages\SshManager\Entities;
 
 class SshPermissionEntity
 {

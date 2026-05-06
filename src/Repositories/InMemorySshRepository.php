@@ -1,9 +1,9 @@
 <?php
 
-namespace ZPMLabs\SshManager\Repositories;
+namespace ZPMPackages\SshManager\Repositories;
 
-use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Contracts\SshRepositoryContract;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
 
 class InMemorySshRepository implements SshRepositoryContract
 {

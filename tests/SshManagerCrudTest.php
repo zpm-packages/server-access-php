@@ -1,12 +1,13 @@
 <?php
 
-namespace ZPMLabs\SshManager\Tests;
+namespace ZPMPackages\SshManager\Tests;
 
 use PHPUnit\Framework\TestCase;
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
-use ZPMLabs\SshManager\Factories\SshManagerFactory;
-use ZPMLabs\SshManager\Repositories\InMemorySshRepository;
-use ZPMLabs\SshManager\Services\SystemDetectorService;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshManagerCredentialsEntity;
+use ZPMPackages\SshManager\Enums\OperatingSystem;
+use ZPMPackages\SshManager\Factories\SshManagerFactory;
+use ZPMPackages\SshManager\Repositories\InMemorySshRepository;
 
 class SshManagerCrudTest extends TestCase
 {
@@ -30,11 +31,43 @@ class SshManagerCrudTest extends TestCase
         
         echo "Test username: {$this->testUsername}\n";
         // The manager is an instance of AbstractSshManagerProvider which has getOsName()
-        if ($this->manager instanceof \ZPMLabs\SshManager\Providers\AbstractSshManagerProvider) {
+        if ($this->manager instanceof \ZPMPackages\SshManager\Providers\AbstractSshManagerProvider) {
             echo "OS: " . $this->manager->getOsName() . "\n";
         } else {
             echo "OS: Unknown\n";
         }
+    }
+
+    public function testManagerCredentialsCanBePassedToProvider(): void
+    {
+        $credentials = new SshManagerCredentialsEntity(
+            username: 'manager-user',
+            password: 'manager-password',
+        );
+
+        $manager = SshManagerFactory::make(
+            repository: new InMemorySshRepository(),
+            os: OperatingSystem::WINDOWS,
+            managerCredentials: $credentials,
+        );
+
+        $resolvedCredentials = $manager->getManagerCredentials();
+
+        $this->assertTrue($manager->hasManagerCredentials());
+        $this->assertNotNull($resolvedCredentials);
+        $this->assertSame('manager-user', $resolvedCredentials->getUsername());
+        $this->assertSame('manager-password', $resolvedCredentials->getPassword());
+    }
+
+    public function testManagerCanBeCreatedWithoutCredentials(): void
+    {
+        $manager = SshManagerFactory::make(
+            repository: new InMemorySshRepository(),
+            os: OperatingSystem::WINDOWS,
+        );
+
+        $this->assertFalse($manager->hasManagerCredentials());
+        $this->assertNull($manager->getManagerCredentials());
     }
 
     public function testListAllEntries(): void
@@ -88,9 +121,6 @@ class SshManagerCrudTest extends TestCase
         $this->assertNotNull($created->getPublicKey());
         $this->assertFileExists($created->getPublicKeyPath());
         $this->assertFileExists($created->getPrivateKeyPath());
-        
-        // Store for update test
-        $this->createdEntryId = $created->getId();
     }
 
     public function testUpdateCreatedEntry(): void

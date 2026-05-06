@@ -1,6 +1,6 @@
 <?php
 
-namespace ZPMLabs\SshManager\Enums;
+namespace ZPMPackages\SshManager\Enums;
 
 enum OperatingSystem: string
 {

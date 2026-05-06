@@ -1,8 +1,8 @@
 <?php
 
-namespace ZPMLabs\SshManager\Contracts;
+namespace ZPMPackages\SshManager\Contracts;
 
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
 
 interface SshRepositoryContract
 {

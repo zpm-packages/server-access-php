@@ -1,22 +1,72 @@
 <?php
 
-namespace ZPMLabs\SshManager\Providers;
+namespace ZPMPackages\SshManager\Providers;
 
-use ZPMLabs\SshManager\Contracts\SshRepositoryContract;
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
-use ZPMLabs\SshManager\Enums\OperatingSystem;
+use ZPMPackages\SshManager\Contracts\SshRepositoryContract;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshManagerCredentialsEntity;
+use ZPMPackages\SshManager\Enums\OperatingSystem;
 
 class MacOsSshManagerProvider extends AbstractSshManagerProvider
 {
-    public function __construct(SshRepositoryContract $repository)
+    public function __construct(
+        SshRepositoryContract $repository,
+        ?SshManagerCredentialsEntity $managerCredentials = null,
+    )
     {
-        parent::__construct($repository);
+        parent::__construct($repository, $managerCredentials);
         echo "[macOS Provider] Initialized\n";
     }
 
     public function getOs(): OperatingSystem
     {
         return OperatingSystem::MACOS;
+    }
+
+    public function listSystemUsernames(): array
+    {
+        $result = $this->executeCommand(['dscl', '.', '-list', '/Users']);
+
+        if ($result['exitCode'] !== 0) {
+            return [];
+        }
+
+        $usernames = array_values(array_filter(array_map(
+            static fn (string $username): string => trim($username),
+            $result['output'],
+        )));
+
+        sort($usernames);
+
+        return array_values(array_unique($usernames));
+    }
+
+    public function verifyUserPassword(string $username, string $password): bool
+    {
+        if (trim($password) === '') {
+            return false;
+        }
+
+        $command = sprintf(
+            "printf '%%s\\n' %s | su - %s -c %s 2>&1",
+            escapeshellarg($password),
+            escapeshellarg($username),
+            escapeshellarg('true'),
+        );
+
+        $output = [];
+        $exitCode = 0;
+
+        exec($command, $output, $exitCode);
+
+        return $exitCode === 0;
+    }
+
+    public function updateUserPassword(string $username, string $newPassword): void
+    {
+        $result = $this->executeCommand(['dscl', '.', '-passwd', '/Users/' . $username, $newPassword]);
+
+        $this->ensureCommandSucceeded($result, 'update macOS user password [' . $username . ']');
     }
 
     public function listEntries(?string $ownerId = null): array
@@ -30,31 +80,17 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
     public function createEntry(SshEntryEntity $entry): SshEntryEntity
     {
         echo "[macOS Provider] Creating entry for user: {$entry->getUsername()}\n";
-        
-        // Generate SSH keys on the system
+
         $keyEntity = $this->generateKeyPairForUser(
             $entry->getUsername(),
             $entry->getName() ?? $entry->getComment(),
-            'ed25519',
-            null
+            $this->normalizeKeyType($entry->getKeyType()),
+            $entry->getKeyBits(),
+            $entry->getKeyPassphrase(),
         );
-        
-        // Merge key paths into the entry
-        $entryWithKeys = new SshEntryEntity(
-            id: $entry->getId() ?: $keyEntity->getId(),
-            username: $entry->getUsername(),
-            name: $entry->getName() ?? $keyEntity->getName(),
-            homeDirectory: $keyEntity->getHomeDirectory(),
-            publicKeyPath: $keyEntity->getPublicKeyPath(),
-            privateKeyPath: $keyEntity->getPrivateKeyPath(),
-            publicKey: $keyEntity->getPublicKey(),
-            comment: $entry->getComment() ?? $keyEntity->getComment(),
-            groups: $entry->getGroups(),
-            ownerId: $entry->getOwnerId(),
-            permissions: $entry->getPermissions(),
-        );
-        
-        // Create entry in repository
+
+        $entryWithKeys = $this->buildManagedEntryFromGeneratedKey($entry, $keyEntity);
+
         $created = $this->repository->create($entryWithKeys);
         
         echo "[macOS Provider] Entry created with ID: {$created->getId()}\n";
@@ -75,15 +111,17 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
             throw new \RuntimeException("Entry not found: {$entry->getId()}");
         }
         
-        // Update keys if username changed
-        if ($existing->getUsername() !== $entry->getUsername()) {
+        if ($this->shouldRegenerateKeyMaterial($existing, $entry)) {
             echo "[macOS Provider] Username changed, regenerating keys\n";
-            $this->generateKeyPairForUser(
+            $keyEntity = $this->generateKeyPairForUser(
                 $entry->getUsername(),
                 $entry->getName() ?? $entry->getComment(),
-                'ed25519',
-                null
+                $this->normalizeKeyType($entry->getKeyType()),
+                $entry->getKeyBits(),
+                $entry->getKeyPassphrase(),
             );
+
+            $entry = $this->buildManagedEntryFromGeneratedKey($entry, $keyEntity);
         }
         
         $updated = $this->repository->update($entry);
@@ -116,43 +154,42 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
     {
         echo "[macOS Provider] Scanning system users\n";
         $entries = [];
-        
-        // macOS uses dscl for user management, similar to Linux for SSH keys
-        $pw = function_exists('posix_getpwnam') ? posix_getpwnam(get_current_user()) : null;
-        if (!$pw) {
-            echo "[macOS Provider] Could not get current user\n";
-            return $entries;
-        }
-        
-        $home = $pw['dir'];
-        $sshDir = rtrim($home, '/') . '/.ssh';
-        
-        if (is_dir($sshDir)) {
+
+        foreach ($this->listSystemUsernames() as $username) {
+            $pw = function_exists('posix_getpwnam') ? posix_getpwnam($username) : null;
+
+            if (! $pw || ! isset($pw['dir'])) {
+                continue;
+            }
+
+            $home = $pw['dir'];
+            $sshDir = rtrim($home, '/') . '/.ssh';
             $pubPath = $sshDir . '/id_ed25519.pub';
             $privPath = $sshDir . '/id_ed25519';
-            
+
             $publicKey = is_readable($pubPath)
                 ? trim((string) file_get_contents($pubPath))
                 : null;
-            
-            if ($publicKey) {
-                $entries[] = new SshEntryEntity(
-                    id: get_current_user() . ':id_ed25519',
-                    username: get_current_user(),
-                    name: get_current_user(),
-                    homeDirectory: $home,
-                    publicKeyPath: $pubPath,
-                    privateKeyPath: $privPath,
-                    publicKey: $publicKey,
-                    comment: null,
-                    groups: [],
-                    ownerId: null,
-                    permissions: [],
-                );
-            }
+
+            $entries[] = new SshEntryEntity(
+                id: $username,
+                username: $username,
+                name: $username,
+                homeDirectory: $home,
+                publicKeyPath: is_readable($pubPath) ? $pubPath : null,
+                privateKeyPath: is_readable($privPath) ? $privPath : null,
+                publicKey: $publicKey,
+                authorizedKeys: $this->loadAuthorizedKeys($home),
+                comment: null,
+                groups: [],
+                ownerId: null,
+                keyType: $publicKey ? 'ed25519' : null,
+                keyBits: null,
+                permissions: [],
+            );
         }
         
-        echo "[macOS Provider] Scanned " . count($entries) . " users with SSH keys\n";
+        echo "[macOS Provider] Scanned " . count($entries) . " users\n";
         return $entries;
     }
 
@@ -160,9 +197,14 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
         string $systemUsername,
         ?string $label = null,
         ?string $keyType = 'ed25519',
-        ?int $bits = null
+        ?int $bits = null,
+        ?string $passphrase = null,
+        ?string $publicKeyPath = null,
+        ?string $privateKeyPath = null,
     ): SshEntryEntity {
         echo "[macOS Provider] Generating key pair for user: {$systemUsername}\n";
+
+        $keyType = $this->normalizeKeyType($keyType);
         
         $pw = function_exists('posix_getpwnam') ? posix_getpwnam($systemUsername) : null;
         
@@ -175,18 +217,15 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
         
         if (!is_dir($sshDir)) {
             echo "[macOS Provider] Creating .ssh directory: {$sshDir}\n";
-            mkdir($sshDir, 0700, true);
+            $this->createDirectory($sshDir);
         }
         
-        $keyFileBase = $sshDir . '/id_' . $keyType;
+        [$keyFileBase, $publicKeyPath] = $this->resolveManagedKeyPaths($home, $label, $keyType, '/', $publicKeyPath, $privateKeyPath);
         
         // Check if key already exists
         if (file_exists($keyFileBase)) {
             echo "[macOS Provider] Key already exists: {$keyFileBase}\n";
-            $publicKeyPath = $keyFileBase . '.pub';
-            $publicKey = is_readable($publicKeyPath)
-                ? trim((string) file_get_contents($publicKeyPath))
-                : null;
+            $publicKey = $this->readFileContents($publicKeyPath);
             
             return new SshEntryEntity(
                 id: $systemUsername . ':id_' . $keyType,
@@ -196,9 +235,12 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
                 publicKeyPath: $publicKeyPath,
                 privateKeyPath: $keyFileBase,
                 publicKey: $publicKey,
+                authorizedKeys: $this->loadAuthorizedKeys($home),
                 comment: $label ?? ($systemUsername . '@' . gethostname()),
                 groups: [],
                 ownerId: null,
+                keyType: $keyType,
+                keyBits: $bits,
                 permissions: [],
             );
         }
@@ -209,7 +251,7 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
             'ssh-keygen',
             '-t', $keyType,
             '-f', $keyFileBase,
-            '-N', '',
+            '-N', $passphrase ?? '',
             '-C', $comment,
         ];
         
@@ -218,31 +260,23 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
             $cmd[] = (string) $bits;
         }
         
-        $escaped = array_map('escapeshellarg', $cmd);
-        $command = implode(' ', $escaped) . ' 2>&1';
+        $command = $this->buildExecutionCommand($cmd);
         
         echo "[macOS Provider] Executing: {$command}\n";
         
-        $output = [];
-        $exitCode = 0;
-        exec($command, $output, $exitCode);
-        
-        if ($exitCode !== 0) {
-            $error = implode("\n", $output);
+        $result = $this->executeCommand($cmd);
+
+        if ($result['exitCode'] !== 0) {
+            $error = implode("\n", $result['output']);
             echo "[macOS Provider] Error generating key: {$error}\n";
-            throw new \RuntimeException(
-                "ssh-keygen failed with code {$exitCode}: {$error}"
-            );
+            $this->ensureCommandSucceeded($result, 'ssh-keygen');
         }
         
         echo "[macOS Provider] Key generated successfully\n";
         
-        $publicKeyPath = $keyFileBase . '.pub';
         $privateKeyPath = $keyFileBase;
         
-        $publicKey = is_readable($publicKeyPath)
-            ? trim((string) file_get_contents($publicKeyPath))
-            : null;
+        $publicKey = $this->readFileContents($publicKeyPath);
         
         echo "[macOS Provider] Public key: " . substr($publicKey ?? '', 0, 50) . "...\n";
         
@@ -254,9 +288,12 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
             publicKeyPath: $publicKeyPath,
             privateKeyPath: $privateKeyPath,
             publicKey: $publicKey,
+            authorizedKeys: $this->loadAuthorizedKeys($home),
             comment: $comment,
             groups: [],
             ownerId: null,
+            keyType: $keyType,
+            keyBits: $bits,
             permissions: [],
         );
         
@@ -266,6 +303,7 @@ class MacOsSshManagerProvider extends AbstractSshManagerProvider
     public function sync(): void
     {
         echo "[macOS Provider] Syncing SSH configuration\n";
+        $this->syncAuthorizedKeysEntries();
         echo "[macOS Provider] Sync completed\n";
     }
 }

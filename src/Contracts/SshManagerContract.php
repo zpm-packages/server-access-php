@@ -1,11 +1,19 @@
 <?php
 
-namespace ZPMLabs\SshManager\Contracts;
+namespace ZPMPackages\SshManager\Contracts;
 
-use ZPMLabs\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshEntryEntity;
+use ZPMPackages\SshManager\Entities\SshManagerCredentialsEntity;
 
 interface SshManagerContract
 {
+    /**
+     * Credentials for the privileged account that manages other system users.
+     */
+    public function getManagerCredentials(): ?SshManagerCredentialsEntity;
+
+    public function hasManagerCredentials(): bool;
+
     /**
      * List all stored SSH entries (from repository).
      *
@@ -41,6 +49,18 @@ interface SshManagerContract
         string $systemUsername,
         ?string $label = null,
         ?string $keyType = 'ed25519',
-        ?int $bits = null
+        ?int $bits = null,
+        ?string $passphrase = null,
+        ?string $publicKeyPath = null,
+        ?string $privateKeyPath = null,
     ): SshEntryEntity;
+
+    /**
+     * @return string[]
+     */
+    public function listSystemUsernames(): array;
+
+    public function verifyUserPassword(string $username, string $password): bool;
+
+    public function updateUserPassword(string $username, string $newPassword): void;
 }

@@ -1,6 +1,6 @@
 <?php
 
-namespace ZPMLabs\SshManager\Exceptions;
+namespace ZPMPackages\SshManager\Exceptions;
 
 class SshException extends \RuntimeException
 {
